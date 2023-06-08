@@ -4,6 +4,7 @@ const app = express();
 const cors = require('cors');
 require('dotenv').config();
 const port = process.env.PORT || 5000 ;
+const jwt = require('jsonwebtoken');
 
 // middleware
 const corsOptions = {
@@ -28,24 +29,86 @@ const client = new MongoClient(uri, {
 });
 
 
+// verify jwt 
+
+const verifyJwt = (req,res, next) =>{
+  const authorization = req.headers.authorization;
+  if(!authorization){
+   return req.status(401).send({error: true, message: 'unauthorized access'});
+  }
+  const token = authorization.split(' ')[1];
+  jwt.verify(token, process.env.ACCESS_TOKEN, (err, decoded)=>{
+    if(err){
+      return res.status(401).send({error: true, message: 'unauthorized access'})
+    }
+    req.decoded = decoded;
+    next()
+  })
+}
+
 
 async function run() {
   try {
 
-    const userCollection = client.db('fluencyDb').collection('users');
+    const userCollection =  client.db('fluencyDb').collection('users');
+    const courseCollection =  client.db('fluencyDb').collection('courses');
 
     // jwt related api
-    app.post('/jwt', (req, res)=>{
-        const email = req.body;
-        res.send({})
+      app.post('/jwt', (req, res) => {
+      const user = req.body
+      const token = jwt.sign(user, process.env.ACCESS_TOKEN, {
+        expiresIn: '1h',
+      })
+
+      res.send({ token })
     })
+
+    // verify admin role 
+    const verifyAdmin = async (req, res, next) =>{
+      const email = req.decoded.email;
+      const query = {email: email};
+      const user  = await userCollection.findOne(query);
+      if(user?.role !== 'admin'){
+        return res.status(403).send({error: true, message: 'forbidden access'});
+      }
+      next()
+    }
+    // verify instructor role
+    const verifyInstructor = async(req,res, next) =>{
+      const email = req.decoded.email;
+      const query = {email: email};
+      const user = await userCollection.findOne(query);
+      if(user?.role !== 'instructor'){
+        return res.status(403).send({error: true, message: 'forbidden access'});
+      }
+      next()
+    }
+
+
+    // user related api and role set
+   
     //  user info save to database 
-    app.post('/users', async(req, res)=>{
+    app.put('/users/:email', async(req, res)=>{
         const user = req.body;
-        const result = await userCollection.insertOne(user);
+        const email = req.params.email;
+        const query = {email: email};
+        const option = {upsert: true};
+        console.log(user, email);
+        const updatedDoc = {
+          $set: user
+        }
+        const result = await userCollection.updateOne(query,updatedDoc, option);
         res.send(result);
     })
-    
+    // get user to db only admin access to get data
+    app.get('/users', verifyJwt, verifyAdmin, async (req,res)=>{
+      const result = await userCollection.find().toArray();
+    })
+
+    // make admin role
+    app.patch('/users/admin/:email')
+    app.patch
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
