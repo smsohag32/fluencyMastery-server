@@ -1,11 +1,11 @@
 const express = require('express');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const app = express();
 const cors = require('cors');
 require('dotenv').config();
 const port = process.env.PORT || 5000 ;
 const jwt = require('jsonwebtoken');
-
+const stripe = require('stripe')(process.env.STIPE_SECRET_KEY)
 // middleware
 const corsOptions = {
   origin: '*',
@@ -52,6 +52,8 @@ async function run() {
 
     const userCollection =  client.db('fluencyDb').collection('users');
     const courseCollection =  client.db('fluencyDb').collection('courses');
+    const cartCollection =  client.db('fluencyDb').collection('carts');
+    const paymentCollection =  client.db('fluencyDb').collection('payments');
 
     // jwt related api
       app.post('/jwt', (req, res) => {
@@ -92,7 +94,6 @@ async function run() {
         const email = req.params.email;
         const query = {email: email};
         const option = {upsert: true};
-        console.log(user, email);
         const updatedDoc = {
           $set: user
         }
@@ -100,25 +101,170 @@ async function run() {
         res.send(result);
     })
     // get user to db only admin access to get data
-    app.get('/users', verifyJwt, verifyAdmin, async (req,res)=>{
+    app.get('/users', verifyJwt,verifyAdmin, async (req,res)=>{
       const result = await userCollection.find().toArray();
       res.send(result);
     })
 
+    // user role verify
+    app.get('/users/admin/:email',verifyJwt, async(req, res) =>{
+
+      const email = req.params.email;
+      if(req.decoded.email !== email){
+      return res.send({role: false})
+      }
+      const query = {email: email};
+      const user = await userCollection.findOne(query);
+      const result = {role : user?.role === 'admin'}
+      
+      res.send(result)
+    })
+    // instructor role verification
+    app.get('/users/instructor/:email',verifyJwt, async(req, res)=>{
+      const email = req.params.email;
+      console.log(email);
+      if(req.decoded.email !== email){
+      return res.send({role: false})
+      }
+      const query = {email: email};
+      const user = await userCollection.findOne(query);
+      const result = {role : user?.role === 'instructor'}  
+      res.send(result)
+    })
+
+
     // make admin role
-    app.patch('/users/admin/:email', async(req,res)=>{
+    app.patch('/users/:email', verifyJwt,verifyAdmin, async(req,res)=>{
       const email = req.params.email;
       const {role} = req.body;
-      const filter = {email: email};
+      console.log(email, role);
+      const query = {email: email};
       const updatedDoc = {
         $set: {
           role: role
         }
       }
-      const result = await userCollection.updateOne(filter, updatedDoc);
+      const result = await userCollection.updateOne(query, updatedDoc);
       res.send(result)
     })
-    app.patch
+
+
+    // delete user
+      app.delete('/users/:email', verifyJwt, verifyAdmin, async(req, res)=>{
+        const email= req.params.email;  
+        const query = {email: email};
+        const result = await userCollection.deleteOne(query);
+        res.send(result);
+      })
+
+
+
+
+      //here course related apis 
+      // get all courses in db
+      // TODO: PROJECTION 
+      app.get('/courses', async(req,res) =>{
+        const result = await courseCollection.find().toArray();
+        res.send(result);
+      })
+      
+      // save a new course to db 
+
+      app.post('/courses', verifyJwt, verifyInstructor, async(req, res)=>{
+        const newCourse = req.body;
+        const result = await courseCollection.insertOne(newCourse);
+        res.send(result)
+      })
+
+      // get instructor filter  course 
+      app.get('/courses/:email', verifyJwt, verifyInstructor, async(req, res)=>{
+        const email = req.params.email;
+        const query = {instructor_email: email};
+        const result = await courseCollection.find(query).toArray();
+        res.send(result);
+
+      })
+
+      // manage courses api only admin 
+      app.patch('/courses/:id', verifyJwt, verifyAdmin, async(req,res)=>{
+        const id = req.params.id;
+        const {status} = req.body;
+        const query = {_id: new ObjectId(id)};
+        const updatedDoc = {
+          $set: {
+            status: status
+          }
+        }
+        const result = await courseCollection.updateOne(query, updatedDoc);
+        res.send(result)
+      })
+
+      // admin send to feed back of the any courses
+        app.patch('/courses/feedback/:id',verifyJwt, verifyAdmin, async(req, res)=>{
+          const id = req.params.id;
+          const {message} = req.body;
+          const query = {_id: new ObjectId(id)};
+          const updatedDoc = {
+            $set: {
+              feedback: message
+            }
+          }
+          const result = await courseCollection.updateOne(query, updatedDoc)
+          res.send(result)
+        })
+        
+        
+        // student all api 
+
+        // post cart in db
+        app.post('/carts', verifyJwt, async(req, res)=>{
+          const newCart = req.body;
+          const result = await cartCollection.insertOne(newCart);
+          res.send();
+        })
+        // get Selected cart
+        app.get('/carts/:email', async(req, res)=>{
+          const email = req.params.email;
+
+          const query = {student_email: email};
+          const result = await cartCollection.find(query).toArray();
+          res.send(result);
+        })
+
+
+
+      // payment related apis 
+
+      // create payment intent and confirm payment
+      app.post('/confirm-payment', verifyJwt, async(req, res)=>{
+        const {amount} = req.body;
+        const stAmount = parseInt(amount * 100);
+        const paymentIntent = await stripe.paymentIntents.create({
+        amount: stAmount,
+        currency: 'usd',
+        payment_method_types: ['card']
+      });
+      console.log(paymentIntent);
+      res.send({
+        clientSecret: paymentIntent.client_secret
+      })
+      })
+
+      // post payment information in db
+      app.post('/payments', verifyJwt, async(req, res)=>{
+        const payment = req.body;
+        const result = await paymentCollection.insertOne(payment);
+        res.send(result)
+      })
+
+    // get student enroll payment history
+    app.get('/payment-history/:email', verifyJwt, async(req, res)=>{
+      const email = req.params.email;
+      console.log(email);
+      const query = {student_email: email};
+      const result = await paymentCollection.find(query).sort({data: -1}).toArray();
+      res.send(result);
+    })
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
