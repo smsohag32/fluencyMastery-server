@@ -6,6 +6,7 @@ require('dotenv').config();
 const port = process.env.PORT || 5000 ;
 const jwt = require('jsonwebtoken');
 const stripe = require('stripe')(process.env.STIPE_SECRET_KEY)
+
 // middleware
 const corsOptions = {
   origin: '*',
@@ -106,11 +107,11 @@ async function run() {
       res.send(result);
     })
 
-    // user role verify
-    app.get('/users/admin/:email',verifyJwt, async(req, res) =>{
+    // user role in true all false all user show it 
+    app.get('/users/admin/:email', async(req, res) =>{
 
       const email = req.params.email;
-      if(req.decoded.email !== email){
+      if(!email){
       return res.send({role: false})
       }
       const query = {email: email};
@@ -119,11 +120,11 @@ async function run() {
       
       res.send(result)
     })
-    // instructor role verification
-    app.get('/users/instructor/:email',verifyJwt, async(req, res)=>{
+    // instructor role true or false all user show it
+    app.get('/users/instructor/:email', async(req, res)=>{
       const email = req.params.email;
-      console.log(email);
-      if(req.decoded.email !== email){
+     
+      if(!email){
       return res.send({role: false})
       }
       const query = {email: email};
@@ -137,7 +138,6 @@ async function run() {
     app.patch('/users/:email', verifyJwt,verifyAdmin, async(req,res)=>{
       const email = req.params.email;
       const {role} = req.body;
-      console.log(email, role);
       const query = {email: email};
       const updatedDoc = {
         $set: {
@@ -158,18 +158,52 @@ async function run() {
       })
 
 
+      // get popular instructor
+      app.get('/users/instructors/popular', async(req, res)=>{
+        const query = {role: 'instructor'};
+        const result = await userCollection.find(query).sort({enroll: 1}).limit(10).toArray();
+        res.send(result);
+      })
 
+
+      // get instructors in db
+      app.get('/users/instructors', async(req, res)=>{
+        const query = {role: 'instructor'};
+        const result = await userCollection.find(query).toArray();
+        res.send(result);
+      })
 
       //here course related apis 
       // get all courses in db
       // TODO: PROJECTION 
-      app.get('/courses', async(req,res) =>{
+      app.get('/courses', verifyJwt,verifyAdmin, async(req,res) =>{
         const result = await courseCollection.find().toArray();
         res.send(result);
       })
-      
-      // save a new course to db 
+      app.get('/courses/approved', async(req,res) =>{
+        const query = {status: 'approved'}
+        const result = await courseCollection.find(query).toArray();
+        res.send(result);
+      })
 
+      // student successful enroll course get in db
+
+      app.get('/courses/payments/:email',verifyJwt, async(req, res)=>{
+        const email = req.params.email;
+        const query = {student_email: email};
+        const result = await paymentCollection.find(query).sort({date: -1}).toArray();
+        res.send(result);
+      })
+
+      // get popular Courses 
+      // TODO: PROJECTION 
+      
+      app.get('/courses/popular', async(req, res)=>{
+        const query = {};
+        const result = await courseCollection.find(query).sort({enroll: -1}).limit(6).toArray();
+        res.send(result);
+      })
+      // save a new course to db 
       app.post('/courses', verifyJwt, verifyInstructor, async(req, res)=>{
         const newCourse = req.body;
         const result = await courseCollection.insertOne(newCourse);
@@ -209,7 +243,7 @@ async function run() {
               feedback: message
             }
           }
-          const result = await courseCollection.updateOne(query, updatedDoc)
+          const result = await courseCollection.updateOne(query, updatedDoc, {upsert: true})
           res.send(result)
         })
         
@@ -220,7 +254,7 @@ async function run() {
         app.post('/carts', verifyJwt, async(req, res)=>{
           const newCart = req.body;
           const result = await cartCollection.insertOne(newCart);
-          res.send();
+          res.send(result);
         })
         // get Selected cart
         app.get('/carts/:email', async(req, res)=>{
@@ -232,8 +266,18 @@ async function run() {
         })
 
 
+        // delete a single course cart items
+        app.delete('/carts/:id', verifyJwt, async(req, res)=>{
+          const id = req.params.id;
+          const query = {_id: new ObjectId(id)};
+          const result = await cartCollection.deleteOne(query);
+          res.send(result);
+        })
 
-      // payment related apis 
+
+
+      // payment related apis ----------------
+      // ---------------------------------------
 
       // create payment intent and confirm payment
       app.post('/confirm-payment', verifyJwt, async(req, res)=>{
@@ -244,7 +288,6 @@ async function run() {
         currency: 'usd',
         payment_method_types: ['card']
       });
-      console.log(paymentIntent);
       res.send({
         clientSecret: paymentIntent.client_secret
       })
@@ -254,15 +297,29 @@ async function run() {
       app.post('/payments', verifyJwt, async(req, res)=>{
         const payment = req.body;
         const result = await paymentCollection.insertOne(payment);
+        const query = {_id: new ObjectId(payment.cartId)};
+      //  delete selected course when to success payment
+        const deletedResult = await cartCollection.deleteOne(query);
+       
+      //  update available seats when success to payment and enroll done
+        const filter = {
+          _id: new ObjectId(payment.courseId), available_seats: {$gt:0} 
+        };
+        const updatedDoc = {
+          $inc: { available_seats: -1, enroll: 1 },
+        }
+        const option = {upsert: false};
+
+        const seatsResult = await courseCollection.updateOne(filter,updatedDoc, option);
         res.send(result)
+
       })
 
     // get student enroll payment history
     app.get('/payment-history/:email', verifyJwt, async(req, res)=>{
       const email = req.params.email;
-      console.log(email);
       const query = {student_email: email};
-      const result = await paymentCollection.find(query).sort({data: -1}).toArray();
+      const result = await paymentCollection.find(query).sort({date: -1}).toArray();
       res.send(result);
     })
 
