@@ -199,7 +199,7 @@ async function run() {
       // TODO: PROJECTION 
       
       app.get('/courses/popular', async(req, res)=>{
-        const query = {};
+        const query = {status: 'approved'};
         const result = await courseCollection.find(query).sort({enroll: -1}).limit(6).toArray();
         res.send(result);
       })
